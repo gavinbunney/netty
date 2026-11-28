@@ -41,6 +41,7 @@ import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.PromiseCombiner;
 import org.jetbrains.annotations.Nullable;
 
@@ -237,12 +238,17 @@ public final class Http3FrameToHttpObjectCodec extends Http3RequestStreamInbound
     }
 
     private Http3Headers toHttp3Headers(HttpMessage msg) {
-        if (msg instanceof HttpRequest) {
-            msg.headers().set(
-                    HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), HttpScheme.HTTPS);
-        }
+        try {
+            if (msg instanceof HttpRequest) {
+                msg.headers().set(
+                        HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), HttpScheme.HTTPS);
+            }
 
-        return HttpConversionUtil.toHttp3Headers(msg, validateHeaders);
+            return HttpConversionUtil.toHttp3Headers(msg, validateHeaders);
+        } catch (Throwable cause) {
+            ReferenceCountUtil.release(msg);
+            throw cause;
+        }
     }
 
     private HttpMessage newMessage(final long id,

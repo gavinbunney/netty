@@ -29,6 +29,7 @@ import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.DuplexChannel;
 import io.netty.channel.socket.nio.NioDatagramChannel;
@@ -48,8 +49,11 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObject;
+import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpRequestDecoder;
 import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpResponseDecoder;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpScheme;
 import io.netty.handler.codec.http.HttpUtil;
@@ -188,6 +192,32 @@ public class Http3FrameToHttpObjectCodecTest {
         assertTrue(ch.isOutputShutdown());
 
         assertFalse(ch.finish());
+    }
+
+    @Test
+    public void releasesFullResponseWhenOutboundHeaderConversionFails() {
+        EmbeddedChannel h1 = new EmbeddedChannel(new HttpResponseDecoder(), new HttpObjectAggregator(32));
+        EmbeddedQuicStreamChannel h3 = new EmbeddedQuicStreamChannel(new Http3FrameToHttpObjectCodec(true));
+        assertTrue(h1.writeInbound(Unpooled.copiedBuffer("HTTP/1.1 200 OK\r\nTE: \"foo,bar\r\n"
+                + "Content-Length: 1\r\n\r\nx", CharsetUtil.US_ASCII)));
+        FullHttpResponse response = h1.readInbound();
+        assertNotNull(response);
+
+        try {
+            assertTrue(response.decoderResult().isSuccess());
+            assertEquals(1, response.content().readableBytes());
+            assertEquals(1, response.refCnt());
+            assertThrows(IllegalArgumentException.class, () -> h3.writeOutbound(response));
+            h3.finishAndReleaseAll();
+            assertEquals(0, response.refCnt());
+        } finally {
+            if (response.refCnt() > 0) {
+                response.release();
+            }
+
+            h3.finishAndReleaseAll();
+            h1.finishAndReleaseAll();
+        }
     }
 
     @Test
@@ -451,6 +481,32 @@ public class Http3FrameToHttpObjectCodecTest {
     }
 
     // client-specific tests
+    @Test
+    public void releasesFullRequestWhenOutboundHeaderConversionFails() {
+        EmbeddedChannel h1 = new EmbeddedChannel(new HttpRequestDecoder(), new HttpObjectAggregator(32));
+        EmbeddedQuicStreamChannel h3 = new EmbeddedQuicStreamChannel(new Http3FrameToHttpObjectCodec(false));
+        assertTrue(h1.writeInbound(Unpooled.copiedBuffer("POST http://example%ZZ/path HTTP/1.1\r\n"
+                + "Host: example\r\nContent-Length: 1\r\n\r\nx", CharsetUtil.US_ASCII)));
+        FullHttpRequest request = h1.readInbound();
+        assertNotNull(request);
+
+        try {
+            assertTrue(request.decoderResult().isSuccess());
+            assertEquals(1, request.content().readableBytes());
+            assertEquals(1, request.refCnt());
+            assertThrows(IllegalArgumentException.class, () -> h3.writeOutbound(request));
+            h3.finishAndReleaseAll();
+            assertEquals(0, request.refCnt());
+        } finally {
+            if (request.refCnt() > 0) {
+                request.release();
+            }
+
+            h3.finishAndReleaseAll();
+            h1.finishAndReleaseAll();
+        }
+    }
+
     @Test
     public void testEncodeEmptyFullRequest() {
         EmbeddedQuicStreamChannel ch = new EmbeddedQuicStreamChannel(new Http3FrameToHttpObjectCodec(false));
